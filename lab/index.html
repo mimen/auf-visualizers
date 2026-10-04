@@ -1,0 +1,75 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AUF waveform lab · Turbo</title>
+<style>
+@font-face{font-family:Signate;src:url('../assets/SignateGrotesk-Black.ttf')}@font-face{font-family:Izoard;src:url('../assets/Izoard-Regular.otf')}
+body{margin:0;padding:20px;background:#141220;color:#ddd;font:14px system-ui}
+h1{font-size:20px;margin:0 0 4px}p.lead{color:#aaa;max-width:1100px;margin:0 0 12px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+button{padding:9px 16px;border:0;border-radius:20px;background:#2a2640;color:#ddd;cursor:pointer;font:600 13px system-ui}
+button.on{background:#7fd1c7;color:#141220}#play{background:#f2f2f2;color:#111}
+canvas{display:block;width:min(100%,1280px);height:auto;border-radius:8px}
+#blurb{max-width:1280px;color:#cfcbe0;margin:10px 0;min-height:40px;line-height:1.45}
+#meter{display:flex;gap:6px;max-width:1280px;margin-top:6px}#meter div{flex:1;font:11px ui-monospace,monospace;color:#999}
+#meter i{display:block;height:6px;background:#7fd1c7;margin:3px 0;transition:none}#meter b{display:block;height:6px;background:#efd183}
+</style>
+<h1>Waveform lab: six motion ideas on Turbo</h1>
+<p class="lead">Same Liquid Light background and layout; only the waveform changes. The audio is analysed into six bands with auto-gain, an envelope follower (fast attack, slow release) and an onset gate per band (spectral flux over an adaptive threshold). Each variant uses those differently. Press Play, then switch variants while it runs. Keys 1 to 6 switch too.</p>
+<div class="bar"><button id="play" disabled>Loading</button><span id="tabs"></span></div>
+<canvas id="out" width="1920" height="1080"></canvas>
+<div id="blurb"></div>
+<div id="meter"></div>
+<details style="max-width:1280px;margin-top:18px;color:#bbb;line-height:1.5"><summary style="cursor:pointer;color:#fff;font-weight:600">What the research said, and how the analysis works</summary>
+<p><b>The pattern in the admired work:</b> the best pieces give each frequency range its own visual job instead of having everything react to one loudness number. <a href="https://beamtracer.com/docs/viz/emberflux">Emberflux</a> runs three lines for bass, mids and highs, rippled by the waveform, with beat-triggered rings. On X, the waveform pieces people save most are 3D waveform landscapes and ribbons (<a href="https://x.com/techartist_/status/2055359239720489344">@techartist_</a>), Apple/Siri-style strands (<a href="https://x.com/davidhaz/status/2064707527862804812">@davidhaz</a>, <a href="https://github.com/kopiro/siriwave">SiriWave</a>), cubes that snap on and off on bass hits (<a href="https://x.com/RedefineFX/status/1966482680066797817">@RedefineFX</a>), and scope displays (<a href="https://x.com/gavinski_s/status/2080010598692372688">Sungalizer</a>). A Grok sweep of X found them; I did not check each post myself. Ridgelines come from <a href="https://threejs3d.com/threejs-projects/projects/poeti8-unknown-pleasures">Unknown Pleasures</a>.</p>
+<p><b>Why the old bars felt awkward:</b> selectr fed raw FFT levels straight to the bars, so the bars twitched with every frame of noise, and a loud mix kept them near the top all the time. Motion-design practice (<a href="https://mediascaleup.com/post/audio-reactive-animation-what-actually-works-motion">this guide</a>, and the <a href="https://hans.fugal.net/comps/papers/bello_2005.pdf">Bello onset tutorial</a>) says: smooth with a fast attack and slow release, gate out the noise floor, calibrate to the mix, keep the output range narrow.</p>
+<p><b>What this lab does with the audio:</b></p>
+<ul><li><b>Six bands:</b> sub, bass, low mid, mid, presence and air.</li>
+<li><b>Auto-gain per band:</b> each band is measured against its own last ~3 seconds, so 0.5 means "normal for right now". A loud master no longer pins everything.</li>
+<li><b>Envelope follower:</b> about 15 ms attack and 250 ms release. Hits land instantly and fall off smoothly. These are the teal meters under the canvas.</li>
+<li><b>Onset gate per band:</b> spectral flux (how much the band just jumped) compared with its own recent average plus 1.6 standard deviations. When it crosses, the gate fires a 1 that decays, with a short lockout so one hit fires once. This is the gate idea: motion triggers on hits, not on level. These are the gold meters.</li>
+<li><b>Beat clock</b> locked to 132 BPM, used for rhythmic decay in F and ridge timing in C.</li>
+<li><b>Springs</b> on top of the gates in A and B, so a hit overshoots a little and settles instead of snapping.</li></ul></details>
+<script src="bg.js"></script>
+<script type="module">
+import { createAnalysis, BAND_NAMES, CLIP_OFFSET, TRACK_LEN } from './audio.js';
+import { VARIANTS } from './variants.js';
+const A = '../assets/', ctx = document.getElementById('out').getContext('2d');
+const load = (s) => new Promise((r, j) => { const i = new Image(); i.onload = () => r(i); i.onerror = () => j(Error(s)); i.src = A + s; });
+const [cover, illo, word, emblem, track] = await Promise.all([load('cover.webp'), load('illo.webp'), load('auf-records-s.png'), load('emblem-s.png'), fetch(A + 'full-peaks.json').then((r) => r.json()), document.fonts.load('40px Signate'), document.fonts.load('40px Izoard')]);
+const tint = (img) => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const x = c.getContext('2d'); x.drawImage(img, 0, 0); x.globalCompositeOperation = 'source-in'; x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); return c; };
+const logo = tint(word), mark = tint(emblem), bg = liquid(illo);
+const audio = new Audio(A + 'clip.mp3'); audio.loop = true;
+let ac, update, state = null, cur = +(new URLSearchParams(location.search).get('v') || 0);
+const vstate = VARIANTS.map((v) => v.init(track));
+const tabs = document.getElementById('tabs'), blurb = document.getElementById('blurb'), meter = document.getElementById('meter');
+VARIANTS.forEach((v, i) => { const b = document.createElement('button'); b.textContent = v.name; b.onclick = () => pick(i); tabs.append(b); });
+meter.innerHTML = BAND_NAMES.map((n) => `<div>${n}<i></i><b></b></div>`).join('');
+function pick(i) { cur = i; [...tabs.children].forEach((b, k) => b.classList.toggle('on', k === i)); blurb.textContent = VARIANTS[i].blurb; }
+pick(cur); addEventListener('keydown', (e) => { const k = +e.key; if (k >= 1 && k <= VARIANTS.length) pick(k - 1); });
+const btn = document.getElementById('play'); btn.disabled = false; btn.textContent = 'Play';
+btn.onclick = async () => {
+  if (!ac) { ac = new AudioContext(); const src = ac.createMediaElementSource(audio); src.connect(ac.destination); update = createAnalysis(ac, src); }
+  if (audio.paused) { await ac.resume(); await audio.play(); btn.textContent = 'Pause'; } else { audio.pause(); btn.textContent = 'Play'; }
+};
+const art = document.createElement('canvas'); art.width = W; art.height = H;
+{ const x = art.getContext('2d'); x.shadowColor = '#0009'; x.shadowBlur = 70; x.shadowOffsetY = 28; x.drawImage(cover, 150, 238, 540, 540); }
+const text = (s, x, y, size, font = 'Izoard', color = '#fff') => { ctx.font = `${size}px ${font}`; ctx.fillStyle = color; ctx.textAlign = 'left'; ctx.fillText(s, x, y); };
+const R = { x: 800, y: 870, w: 980, h: 250 };
+let last = 0, clock = 0, frames = 0;
+function draw(now) {
+  const dt = Math.min(0.05, (now - last) / 1000 || 0.016); last = now; if (!audio.paused) clock += dt;
+  if (update && !audio.paused) state = update(dt, audio.currentTime);
+  const a = state || { env: new Float32Array(6), gate: new Float32Array(6), level: new Float32Array(6), spectrum: new Float32Array(96), kick: 0, beat: 0 };
+  const pos = (CLIP_OFFSET + audio.currentTime) / TRACK_LEN;
+  shineBackground(ctx, 0.9, 81, Math.sin(clock * 0.1) * 180);
+  ctx.save(); ctx.globalAlpha = 0.93; ctx.drawImage(bg(clock, a.env[0] * 0.8, (a.env[4] + a.env[5]) / 2), 0, 0, W, H); ctx.restore();
+  const shade = ctx.createRadialGradient(W * 0.6, H * 0.6, 50, W * 0.6, H * 0.6, W * 0.6); shade.addColorStop(0, '#16132588'); shade.addColorStop(1, '#16132500'); ctx.fillStyle = shade; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(art, 0, 0);
+  ctx.save(); VARIANTS[cur].draw(ctx, R, a, vstate[cur], pos, dt); ctx.restore();
+  text('GRABBA', 800, 319, 48); text('TURBO', 790, 486, 182, 'Signate'); text('ORIGINAL MIX', 806, 545, 31, 'Izoard', '#ddd8e7');
+  const lh = 76, lw = lh * logo.width / logo.height; ctx.drawImage(logo, 150, 960 - lh / 2, lw * 0.8, lh * 0.8); ctx.drawImage(mark, 150 + lw * 0.8 + 20, 960 - lh / 2, lh * 0.8, lh * 0.8);
+  [...meter.children].forEach((d, i) => { d.children[0].style.width = (a.env[i] * 100) + '%'; d.children[1].style.width = (a.gate[i] * 100) + '%'; });
+  window.labState = { frames: ++frames, cur, playing: !audio.paused, onsets: state?.onsets || 0, env: Array.from(a.env), gate: Array.from(a.gate) };
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script></html>
