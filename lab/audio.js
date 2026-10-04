@@ -15,18 +15,22 @@ export function createAnalysis(ctx, source) {
   const bins = an.frequencyBinCount, hz = ctx.sampleRate / an.fftSize;
   const db = new Float32Array(bins), wave = new Float32Array(an.fftSize);
   const ranges = BANDS.map(([lo, hi]) => [Math.max(1, Math.round(lo / hz)), Math.round(hi / hz)]);
+  // The bass alone, low-passed, for variants that draw the actual bass waveform.
+  const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 150; lp.Q.value = 0.7;
+  const anB = ctx.createAnalyser(); anB.fftSize = 4096; source.connect(lp); lp.connect(anB);
+  const bassWave = new Float32Array(anB.fftSize);
   const n = BANDS.length;
   const s = {
     raw: new Float32Array(n), level: new Float32Array(n), env: new Float32Array(n), gate: new Float32Array(n),
     floor: new Float32Array(n).fill(-60), ceil: new Float32Array(n).fill(36), // running mean and variance in dB
     flux: new Float32Array(n), fluxAvg: new Float32Array(n), fluxVar: new Float32Array(n), lastHit: new Float32Array(n),
-    prev: new Float32Array(bins), wave, spectrum: new Float32Array(96), kick: 0, beat: 0, bar: 0, onsets: 0,
+    prev: new Float32Array(bins), wave, bassWave, hit: new Uint8Array(n), spectrum: new Float32Array(96), kick: 0, beat: 0, bar: 0, onsets: 0,
   };
   // 96 log-spaced spectrum points (40 Hz..16 kHz) for variants that want a continuous shape.
   const specIdx = Array.from({ length: 97 }, (_, i) => Math.round(40 * Math.pow(400, i / 96) / hz));
 
   return function update(dt, time) {
-    an.getFloatFrequencyData(db); an.getFloatTimeDomainData(wave);
+    an.getFloatFrequencyData(db); an.getFloatTimeDomainData(wave); anB.getFloatTimeDomainData(bassWave); s.hit.fill(0);
     for (let b = 0; b < n; b++) {
       const [lo, hi] = ranges[b]; let sum = 0, flux = 0;
       for (let k = lo; k < hi; k++) { const v = Math.max(db[k], -110); sum += v; const d = v - s.prev[k]; if (d > 0) flux += d; }
@@ -44,7 +48,7 @@ export function createAnalysis(ctx, source) {
       const a = 1 - Math.exp(-dt / 0.6);
       const dev = flux - s.fluxAvg[b]; s.fluxAvg[b] += dev * a; s.fluxVar[b] += (dev * dev - s.fluxVar[b]) * a;
       const thresh = s.fluxAvg[b] + 1.6 * Math.sqrt(s.fluxVar[b]) + 0.4;
-      if (flux > thresh && time - s.lastHit[b] > (b < 2 ? 0.18 : 0.09)) { s.gate[b] = 1; s.lastHit[b] = time; s.onsets++; }
+      if (flux > thresh && time - s.lastHit[b] > (b < 2 ? 0.18 : 0.09)) { s.gate[b] = 1; s.hit[b] = 1; s.lastHit[b] = time; s.onsets++; }
       s.gate[b] *= Math.exp(-dt / (b < 2 ? 0.22 : 0.12));
       s.flux[b] = flux;
     }

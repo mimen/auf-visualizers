@@ -12,8 +12,8 @@ canvas{display:block;width:min(100%,1280px);height:auto;border-radius:8px}
 #meter{display:flex;gap:6px;max-width:1280px;margin-top:6px}#meter div{flex:1;font:11px ui-monospace,monospace;color:#999}
 #meter i{display:block;height:6px;background:#7fd1c7;margin:3px 0;transition:none}#meter b{display:block;height:6px;background:#efd183}
 </style>
-<h1>Waveform lab: six motion ideas on Turbo</h1>
-<p class="lead">Same Liquid Light background and layout; only the waveform changes. The audio is analysed into six bands with auto-gain, an envelope follower (fast attack, slow release) and an onset gate per band (spectral flux over an adaptive threshold). Each variant uses those differently. Press Play, then switch variants while it runs. Keys 1 to 6 switch too.</p>
+<h1>Waveform lab, round 2: A, B, C and F refined</h1>
+<p class="lead">Same Liquid Light background and layout; only the waveform changes. The audio is analysed into six bands with auto-gain, an envelope follower (fast attack, slow release) and an onset gate per band (spectral flux over an adaptive threshold). Round 2 runs every moving value through a spring or a wave simulation instead of mapping levels straight to pixels, and turns hits into motion that travels rather than flashes. The background is now a slow, soft morph that runs at full speed while playing and eases down to a crawl when paused. Round 1 versions are at the end for comparison. Press Play, then switch while it runs; keys 1 to 8 switch too.</p>
 <div class="bar"><button id="play" disabled>Loading</button><span id="tabs"></span></div>
 <canvas id="out" width="1920" height="1080"></canvas>
 <div id="blurb"></div>
@@ -31,7 +31,10 @@ canvas{display:block;width:min(100%,1280px);height:auto;border-radius:8px}
 <script src="bg.js"></script>
 <script type="module">
 import { createAnalysis, BAND_NAMES, CLIP_OFFSET, TRACK_LEN } from './audio.js';
-import { VARIANTS } from './variants.js';
+import { VARIANTS as V1 } from './variants.js';
+import { V2 } from './v2.js';
+// Round 2 first; round 1 kept behind it for comparison (A, B, C, F only).
+const VARIANTS = [...V2, ...['pump', 'strands', 'ridges', 'orbit'].map((id) => { const v = V1.find((x) => x.id === id); return { ...v, name: v.name.replace(/^(\w)\./, '$1 (round 1).') }; })];
 const A = '../assets/', ctx = document.getElementById('out').getContext('2d');
 const load = (s) => new Promise((r, j) => { const i = new Image(); i.onload = () => r(i); i.onerror = () => j(Error(s)); i.src = A + s; });
 const [cover, illo, word, emblem, track] = await Promise.all([load('cover.webp'), load('illo.webp'), load('auf-records-s.png'), load('emblem-s.png'), fetch(A + 'full-peaks.json').then((r) => r.json()), document.fonts.load('40px Signate'), document.fonts.load('40px Izoard')]);
@@ -54,9 +57,11 @@ const art = document.createElement('canvas'); art.width = W; art.height = H;
 { const x = art.getContext('2d'); x.shadowColor = '#0009'; x.shadowBlur = 70; x.shadowOffsetY = 28; x.drawImage(cover, 150, 238, 540, 540); }
 const text = (s, x, y, size, font = 'Izoard', color = '#fff') => { ctx.font = `${size}px ${font}`; ctx.fillStyle = color; ctx.textAlign = 'left'; ctx.fillText(s, x, y); };
 const R = { x: 800, y: 870, w: 980, h: 250 };
-let last = 0, clock = 0, frames = 0;
+let last = 0, clock = 0, frames = 0, speed = 0.15;
 function draw(now) {
-  const dt = Math.min(0.05, (now - last) / 1000 || 0.016); last = now; if (!audio.paused) clock += dt;
+  const dt = Math.min(0.05, (now - last) / 1000 || 0.016); last = now;
+  // Background clock eases to full speed while playing and to a slow drift when paused.
+  speed += ((audio.paused ? 0.15 : 1) - speed) * (1 - Math.exp(-dt / 1.5)); clock += dt * speed;
   if (update && !audio.paused) state = update(dt, audio.currentTime);
   const a = state || { env: new Float32Array(6), gate: new Float32Array(6), level: new Float32Array(6), spectrum: new Float32Array(96), kick: 0, beat: 0 };
   const pos = (CLIP_OFFSET + audio.currentTime) / TRACK_LEN;
