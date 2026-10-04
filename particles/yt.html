@@ -1,0 +1,71 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Turbo · particle edition</title><style>
+@font-face{font-family:Signate;src:url(../assets/SignateGrotesk-Black.ttf)}@font-face{font-family:Izoard;src:url(../assets/Izoard-Regular.otf)}
+body{margin:0;padding:20px;background:#14121c;color:#eee;font:14px system-ui}button{padding:12px 24px;border:1px solid #7fd1c7;background:#332d49;color:white;border-radius:5px;cursor:pointer;margin-bottom:16px}canvas{display:block;width:min(100%,1280px);height:auto}#status{margin-left:16px;color:#bcb6ce}
+</style><button id="play" disabled>Loading</button><span id="status">GRABBA · TURBO · 132 BPM</span><canvas id="visual" width="1920" height="1080" aria-label="Turbo audio reactive particle artwork"></canvas><script>
+const STORY=false,W=STORY?1080:1920,H=STORY?1920:1080,BG='#332d49',BPM=132;
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');
+const load=src=>new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(Error('Missing '+src));img.src='../assets/'+src;});
+const SHINE_STOPS = [[0, 0, 0, 0], [0.48, -26, 0.21, 0.055], [0.56, -23, 0.17, 0.025], [0.86, -5, 0, -0.067], [1, 12, -0.06, -0.108]];
+function rgbToHsl(hex) {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min, s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h / 6, s, l];
+}
+const hsl = (h, s, l) => `hsl(${(((h % 1) + 1) % 1) * 360} ${Math.max(0, Math.min(1, s)) * 100}% ${Math.max(0, Math.min(1, l)) * 100}%)`;
+const BASE = rgbToHsl(BG);
+function shineBackground(ctx, strength, angle, shift) {
+  const rad = angle * Math.PI / 180, half = Math.hypot(W, H) / 2, dx = Math.cos(rad) * half, dy = Math.sin(rad) * half;
+  const cx = W / 2 + Math.cos(rad) * shift, cy = H / 2 + Math.sin(rad) * shift; // shift slides the bright line along the axis
+  const g = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
+  for (const [o, dh, ds, dl] of SHINE_STOPS) g.addColorStop(o, hsl(BASE[0] + dh / 360 * strength, BASE[1] + ds * strength, BASE[2] + dl * strength));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+
+// selectr's composite: per-bar weights over kick, lows, mids2, mids1, highs3, highs2, highs1, cycling every 19 bars.
+const WEIGHTS = [[1,3,4,6,1,0,0],[1,1,5,4,1,0,0],[2,2,7,3,1,0,0],[3,4,5,2,1,0,0],[4,6,3,2,0,0,0],[5,5,3,2,0,0,0],[8,4,2,1,0,0,0],[10,3,1,1,0,0,1],[10,2,1,0,0,1,1],[9,3,0,0,0,1,2],[8,2,0,0,0,2,3],[6,1,0,0,0,2,6],[3,0,0,0,1,3,8],[2,0,0,0,2,5,6],[2,0,0,1,2,8,2],[1,0,0,2,4,6,2],[0,0,1,5,7,2,0],[0,1,3,5,5,1,0],[0,2,5,6,2,0,0]];
+const mean = (a, i, j) => { let s = 0; for (let k = i; k < j; k++) s += a[k]; return s / (j - i); };
+function selectrBands(fd) { // fd: 256 bins, as selectr read them
+  return [mean(fd, 7, 9) * 0.7, mean(fd, 34, 37) * 0.8, mean(fd, 60, 63) * 0.9, mean(fd, 99, 102) * 0.95, mean(fd, 135, 155), mean(fd, 165, 190), mean(fd, 201, 246)].map((v) => v * 0.4);
+}
+function composite(w, b) { let num = 0, den = 0; for (let k = 0; k < 7; k++) { num += w[k] * b[k]; den += w[k]; } return num / (den || 1); }
+
+
+function particleField(illo){
+ const layer=document.createElement('canvas');layer.width=W;layer.height=H;
+ const gl=layer.getContext('webgl',{alpha:true,premultipliedAlpha:true,preserveDrawingBuffer:true});if(!gl)throw Error('WebGL is required');
+ const sample=document.createElement('canvas');sample.width=220;sample.height=228;const s=sample.getContext('2d');s.drawImage(illo,0,0,220,228);const pixels=s.getImageData(0,0,220,228).data,data=[];
+ for(let y=0;y<228;y++)for(let x=0;x<220;x++){const i=(y*220+x)*4;if(pixels[i+3]>100 && Math.max(...pixels.slice(i,i+3))>70){data.push(x/220-.5,y/228-.5,pixels[i]/255,pixels[i+1]/255,pixels[i+2]/255,Math.random());}}
+ const vs=`attribute vec2 home;attribute vec3 color;attribute float seed;uniform vec2 resolution;uniform vec2 center;uniform float scale,time,beat,kick,highs;varying vec3 tint;varying float alpha;
+ vec2 curl(vec2 p,float t){return vec2(cos(p.y*2.7+t)*2.7+cos(p.x*1.3+p.y*2.1-t)*1.26,-cos(p.x*2.2-t)*2.2-cos(p.x*1.3+p.y*2.1-t)*.78);}
+ void main(){float breath=pow(.5-.5*cos(beat*6.2831853/32.),1.5);vec2 p=home;for(int j=0;j<5;j++){p+=curl(p*2.2,time*.12+float(j)*.1)*(.0005+breath*.009);}p+=vec2(sin(seed*47.+time*.18),cos(seed*31.+time*.14))*breath*.085;
+ vec2 radial=normalize(p+vec2(.0001));float radius=length(p);float ring=exp(-pow((radius-fract(beat)*.95)/.075,2.))*kick;p+=radial*ring*.009;
+ vec2 xy=center+p*scale;gl_Position=vec4(xy/resolution*vec2(2.,-2.)+vec2(-1.,1.),0,1);
+ float sparkle=pow(max(0.,sin(time*2.7+seed*800.)),36.)*highs;gl_PointSize=3.8+seed*2.8+sparkle*5.;tint=color+vec3(sparkle*.8+ring*.4);alpha=.65+sparkle*.6+ring*.25;}`;
+ const fs=`precision mediump float;varying vec3 tint;varying float alpha;void main(){float r=length(gl_PointCoord-.5)*2.;float glow=exp(-r*r*4.);gl_FragColor=vec4(tint,glow*alpha);}`;
+ const program=gl.createProgram();for(const [type,source]of[[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(shader));gl.attachShader(program,shader);}gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);
+ gl.bindBuffer(gl.ARRAY_BUFFER,gl.createBuffer());gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);
+ for(const[name,size,offset]of[['home',2,0],['color',3,8],['seed',1,20]]){const loc=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,size,gl.FLOAT,false,24,offset);}
+ gl.enable(gl.BLEND);gl.blendFuncSeparate(gl.SRC_ALPHA,gl.ONE,gl.ONE,gl.ONE);const u=Object.fromEntries(['resolution','center','scale','time','beat','kick','highs'].map(n=>[n,gl.getUniformLocation(program,n)]));gl.uniform2f(u.resolution,W,H);gl.uniform2f(u.center,STORY?540:1430,STORY?780:440);gl.uniform1f(u.scale,STORY?740:1250);
+ return{count:data.length/6,draw(t,beat,kick,highs){gl.clear(gl.COLOR_BUFFER_BIT);for(const[name,value]of Object.entries({time:t,beat,kick,highs}))gl.uniform1f(u[name],value);gl.drawArrays(gl.POINTS,0,data.length/6);ctx.save();ctx.globalCompositeOperation='screen';ctx.globalAlpha=STORY?1.:.52;ctx.drawImage(layer,0,0);ctx.restore();}};
+}
+Promise.all([load('cover.webp'),load('illo.webp'),load('auf-records-s.png'),load('emblem-s.png'),fetch('../assets/full-peaks.json').then(r=>r.json()),document.fonts.load('40px Signate'),document.fonts.load('40px Izoard')]).then(([cover,illo,word,emblem,track])=>{
+ const particles=particleField(illo),audio=new Audio('../assets/clip.mp3');audio.loop=true;let ac,an,kick=0,highs=0,last=0;const fd=new Uint8Array(256),embers=[];
+ const tint=img=>{const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const x=c.getContext('2d');x.drawImage(img,0,0);x.globalCompositeOperation='source-in';x.fillStyle='white';x.fillRect(0,0,c.width,c.height);return c;};word=tint(word);emblem=tint(emblem);
+ const X0=STORY?95:640,X1=STORY?985:1780,base=STORY?1210:785,n=Math.floor((X1-X0)/13),bucket=track.peaks.length/n,shape=Array.from({length:n},(_,i)=>mean(track.peaks,Math.floor(i*bucket),Math.max(Math.floor(i*bucket)+1,Math.floor((i+1)*bucket)))),max=Math.max(...shape),heights=new Float32Array(n);
+ const play=document.querySelector('#play');play.disabled=false;play.textContent='Play';play.onclick=async()=>{try{if(!ac){ac=new AudioContext();an=ac.createAnalyser();an.fftSize=512;ac.createMediaElementSource(audio).connect(an);an.connect(ac.destination);}if(audio.paused){await ac.resume();await audio.play();play.textContent='Pause';}else{audio.pause();play.textContent='Play';}}catch(e){document.querySelector('#status').textContent=e.message;}};
+ const text=(str,x,y,size,font='Izoard',color='white',align='left')=>{ctx.textAlign=align;ctx.font=`${size}px ${font}`;ctx.fillStyle=color;ctx.fillText(str,x,y);};
+ function draw(now){const dt=Math.min(.05,(now-last)/1000||.016);last=now;const t=audio.currentTime,beat=t*BPM/60,pos=(160.5+t)/365.45;if(an)an.getByteFrequencyData(fd);const b=selectrBands(fd);kick+=(b[0]/71.4-kick)*.25;highs+=((b[4]+b[5]+b[6])/306-highs)*.15;
+ shineBackground(ctx,.9,81,Math.sin(beat*Math.PI/32)*150);
+ const halo=ctx.createRadialGradient(STORY?540:1320,STORY?830:430,20,STORY?540:1320,STORY?830:430,STORY?800:900);halo.addColorStop(0,`rgba(127,209,199,${.045+kick*.025})`);halo.addColorStop(1,'rgba(20,15,32,0)');ctx.fillStyle=halo;ctx.fillRect(0,0,W,H);particles.draw(t,beat,kick,highs);
+ const shade=ctx.createLinearGradient(0,0,0,H);shade.addColorStop(0,'rgba(13,10,25,.25)');shade.addColorStop(.52,'rgba(13,10,25,0)');shade.addColorStop(1,'rgba(13,10,25,.56)');ctx.fillStyle=shade;ctx.fillRect(0,0,W,H);
+ for(let i=0;i<n;i++){const target=Math.pow(Math.max(shape[i]/max*.25*composite(WEIGHTS[i%19],b),.01),1.55)/150*(STORY?290:360);heights[i]+=(target-heights[i])*(target>heights[i]?.7:.25);const h=Math.max(3,heights[i]),x=X0+i*13,played=i/n<pos;ctx.save();ctx.shadowColor=played?'#7fd1c7':'#c3bcf2';ctx.shadowBlur=9;const grad=ctx.createLinearGradient(0,base-h,0,base+25);grad.addColorStop(0,played?'#d7fff0':'#d1cbe9');grad.addColorStop(1,played?'#459e91':'#827390');ctx.fillStyle=grad;ctx.globalAlpha=played?.96:.56;ctx.beginPath();ctx.roundRect(x,base-h,5,h,2.5);ctx.fill();ctx.shadowBlur=0;ctx.globalAlpha=played?.16:.08;ctx.fillRect(x,base+7,5,h*.23);ctx.restore();if(!audio.paused&&h>Math.max(55,Math.max(...heights)*.8)&&Math.random()<dt*.14)embers.push({x:x+2,y:base-h,life:1,v:20+Math.random()*25});}
+ ctx.save();ctx.globalCompositeOperation='lighter';for(let i=embers.length-1;i>=0;i--){const p=embers[i];if(!audio.paused){p.life-=dt*.35;p.y-=p.v*dt;p.x+=Math.sin(t+p.v)*dt*8;}if(p.life<=0){embers.splice(i,1);continue;}ctx.fillStyle=`rgba(160,255,220,${p.life*.8})`;ctx.shadowColor='#7fd1c7';ctx.shadowBlur=8;ctx.fillRect(p.x,p.y,2.5,2.5);}ctx.restore();
+ if(STORY){text('GRABBA',540,258,40,'Izoard','white','center');text('TURBO EP',540,364,120,'Signate','white','center');text('AUF005',540,414,30,'Izoard','#cfc6dd','center');text('TURBO (ORIGINAL MIX)',540,1370,48,'Izoard','white','center');text('OUT NOW',540,1430,32,'Izoard','#cfc6dd','center');ctx.save();ctx.setLineDash([17,13]);ctx.lineWidth=3;ctx.strokeStyle='rgba(255,255,255,.4)';ctx.beginPath();ctx.roundRect(150,1484,780,200,30);ctx.stroke();ctx.restore();text('LINK STICKER',540,1598,34,'Izoard','#c0b7cf','center');const lh=100,ww=lh*word.width/word.height;ctx.drawImage(word,540-ww-22,1720,ww,lh);ctx.drawImage(emblem,562,1720,lh,lh);
+ }else{ctx.save();ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=60;ctx.shadowOffsetY=22;ctx.drawImage(cover,130,310,430,430);ctx.restore();ctx.strokeStyle='rgba(240,223,255,.18)';ctx.strokeRect(129.5,309.5,431,431);text('GRABBA',637,342,48);text('TURBO',628,500,176,'Signate');text('ORIGINAL MIX',642,550,29,'Izoard','#d3c7de');text('TURBO EP  /  AUF005',130,822,25,'Izoard','#c7bacf');const lh=75,ww=lh*word.width/word.height;ctx.drawImage(word,1780-ww-lh-28,907,ww,lh);ctx.drawImage(emblem,1780-lh,907,lh,lh);text('AFTERNOON UMBRELLA FRIENDS',130,964,23,'Izoard','#b8aaca');}
+ window.visualizerState={time:t,playing:!audio.paused,particles:particles.count,kick,highs,peak:Math.max(...heights),frameMs:dt*1000};requestAnimationFrame(draw);
+ }requestAnimationFrame(draw);
+}).catch(e=>{document.querySelector('#status').textContent=e.message;console.error(e);});
+</script></html>

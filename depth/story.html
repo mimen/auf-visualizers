@@ -1,0 +1,74 @@
+<!doctype html><html><head><meta charset="utf-8"><title>GRABBA — Depth and light</title><style>
+@font-face{font-family:Signate;src:url('../assets/SignateGrotesk-Black.ttf')}@font-face{font-family:Izoard;src:url('../assets/Izoard-Regular.otf')}body{margin:0;padding:20px;background:#101016;color:#fff;font:14px system-ui}button{padding:12px 28px;margin-bottom:16px;background:#7fd1c7;color:#172421;border:0;border-radius:6px;font:600 14px system-ui}canvas{display:block;width:min(100%,1280px);height:auto}#status{margin-left:16px;color:#acabb5}
+</style><script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script></head><body><button id="play" disabled>Loading</button><span id="status">DEPTH / LIGHT · GRABBA · TURBO</span><canvas id="output"></canvas><script type="module">
+import * as THREE from 'three';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
+import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
+const STORY=true,W=STORY?1080:1920,H=STORY?1920:1080;
+const canvas=document.querySelector('#output');canvas.width=W;canvas.height=H;const ctx=canvas.getContext('2d');
+const load=s=>new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=()=>reject(new Error(s));i.src='../assets/'+s;});
+const [cover,illo,word,emblem,track]=await Promise.all([load('cover.webp'),load('illo.webp'),load('auf-records-s.png'),load('emblem-s.png'),fetch('../assets/full-peaks.json').then(r=>r.json()),document.fonts.load('40px Signate'),document.fonts.load('40px Izoard')]);
+const audio=new Audio('../assets/clip.mp3');audio.loop=true;audio.crossOrigin='anonymous';let ac,an,kick=0,highs=0;const fd=new Uint8Array(256);
+const play=document.querySelector('#play');play.disabled=false;play.textContent='Play';play.onclick=async()=>{try{if(!ac){ac=new AudioContext();an=ac.createAnalyser();an.fftSize=512;ac.createMediaElementSource(audio).connect(an);an.connect(ac.destination);}if(audio.paused){await ac.resume();await audio.play();play.textContent='Pause';}else{audio.pause();play.textContent='Play';}}catch(e){document.querySelector('#status').textContent=e.message;}};
+const WEIGHTS = [[1,3,4,6,1,0,0],[1,1,5,4,1,0,0],[2,2,7,3,1,0,0],[3,4,5,2,1,0,0],[4,6,3,2,0,0,0],[5,5,3,2,0,0,0],[8,4,2,1,0,0,0],[10,3,1,1,0,0,1],[10,2,1,0,0,1,1],[9,3,0,0,0,1,2],[8,2,0,0,0,2,3],[6,1,0,0,0,2,6],[3,0,0,0,1,3,8],[2,0,0,0,2,5,6],[2,0,0,1,2,8,2],[1,0,0,2,4,6,2],[0,0,1,5,7,2,0],[0,1,3,5,5,1,0],[0,2,5,6,2,0,0]];
+const mean = (a, i, j) => { let s = 0; for (let k = i; k < j; k++) s += a[k]; return s / (j - i); };
+function selectrBands(fd) { // fd: 256 bins, as selectr read them
+  return [mean(fd, 7, 9) * 0.7, mean(fd, 34, 37) * 0.8, mean(fd, 60, 63) * 0.9, mean(fd, 99, 102) * 0.95, mean(fd, 135, 155), mean(fd, 165, 190), mean(fd, 201, 246)].map((v) => v * 0.4);
+}
+function composite(w, b) { let num = 0, den = 0; for (let k = 0; k < 7; k++) { num += w[k] * b[k]; den += w[k]; } return num / (den || 1); }
+
+const BG='#332d49';
+const SHINE_STOPS = [[0, 0, 0, 0], [0.48, -26, 0.21, 0.055], [0.56, -23, 0.17, 0.025], [0.86, -5, 0, -0.067], [1, 12, -0.06, -0.108]];
+function rgbToHsl(hex) {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min, s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h / 6, s, l];
+}
+const hsl = (h, s, l) => `hsl(${(((h % 1) + 1) % 1) * 360} ${Math.max(0, Math.min(1, s)) * 100}% ${Math.max(0, Math.min(1, l)) * 100}%)`;
+const BASE = rgbToHsl(BG);
+function shineBackground(ctx, strength, angle, shift) {
+  const rad = angle * Math.PI / 180, half = Math.hypot(W, H) / 2, dx = Math.cos(rad) * half, dy = Math.sin(rad) * half;
+  const cx = W / 2 + Math.cos(rad) * shift, cy = H / 2 + Math.sin(rad) * shift; // shift slides the bright line along the axis
+  const g = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
+  for (const [o, dh, ds, dl] of SHINE_STOPS) g.addColorStop(o, hsl(BASE[0] + dh / 360 * strength, BASE[1] + ds * strength, BASE[2] + dl * strength));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+
+
+const sky=document.createElement('canvas');sky.width=W;sky.height=H;const skyCtx=sky.getContext('2d');shineBackground(skyCtx,.9,81,0);skyCtx.fillStyle='#080f22aa';skyCtx.fillRect(0,0,W,H);const skyTexture=new THREE.CanvasTexture(sky);skyTexture.colorSpace=THREE.SRGBColorSpace;
+const scene=new THREE.Scene();scene.background=skyTexture;scene.fog=new THREE.FogExp2('#25283a',.028);
+const camera=new THREE.PerspectiveCamera(STORY?48:43,W/H,.1,100);camera.position.set(0,6,23);camera.lookAt(0,3,0);
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setSize(W,H);renderer.setPixelRatio(1);renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
+const composer=new EffectComposer(renderer);composer.addPass(new RenderPass(scene,camera));const bloom=new UnrealBloomPass(new THREE.Vector2(W,H),.42,.5,.68);composer.addPass(bloom);composer.addPass(new OutputPass());
+scene.add(new THREE.HemisphereLight('#b9b1dc','#102526',2));const key=new THREE.DirectionalLight('#ffdca0',3);key.position.set(-5,12,5);scene.add(key);
+const palette=['#7fd1c7','#e0c060','#f2a7a0'];
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(160,160),new THREE.ShaderMaterial({transparent:true,depthWrite:false,vertexShader:`varying vec3 world;void main(){world=(modelMatrix*vec4(position,1.)).xyz;gl_Position=projectionMatrix*viewMatrix*vec4(world,1.);}`,fragmentShader:`varying vec3 world;void main(){gl_FragColor=vec4(.025,.035,.055,.6*exp(-length(world.xz)*.14));}`}));ground.rotation.x=-Math.PI/2;ground.position.y=-.035;scene.add(ground);
+const N=110,bucket=track.peaks.length/N,shape=Array.from({length:N},(_,i)=>mean(track.peaks,Math.floor(i*bucket),Math.max(Math.floor(i*bucket)+1,Math.floor((i+1)*bucket))));const max=Math.max(...shape);
+const geo=new RoundedBoxGeometry(STORY?.065:.12,1,.18,2,.035);const bars=shape.map((s,i)=>{const f=i/(N-1),x=(f-.5)*(STORY?12:29),z=-1+Math.pow(f-.5,2)*11;const color=new THREE.Color(palette[Math.floor(f*2.999)]);const material=new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:.5,metalness:.45,roughness:.24,transparent:true});const mesh=new THREE.Mesh(geo,material);mesh.position.set(x,.5,z);scene.add(mesh);const reflection=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color,transparent:true,opacity:.13,depthWrite:false}));reflection.position.set(x,-.5,z);scene.add(reflection);return{mesh,reflection,shape:s/max,height:.2,color};});
+const ghostCanvas=document.createElement('canvas');ghostCanvas.width=illo.width;ghostCanvas.height=illo.height;const ghostCtx=ghostCanvas.getContext('2d');ghostCtx.drawImage(illo,0,0);ghostCtx.globalCompositeOperation='destination-in';const ghostFade=ghostCtx.createLinearGradient(0,0,0,illo.height);ghostFade.addColorStop(0,'#fff');ghostFade.addColorStop(.6,'#fff');ghostFade.addColorStop(1,'#fff0');ghostCtx.fillStyle=ghostFade;ghostCtx.fillRect(0,0,illo.width,illo.height);const texture=new THREE.CanvasTexture(ghostCanvas);texture.colorSpace=THREE.SRGBColorSpace;const ghost=new THREE.Mesh(new THREE.PlaneGeometry(26,27),new THREE.MeshBasicMaterial({map:texture,transparent:true,opacity:.2,depthWrite:false}));ghost.position.set(STORY?0:7,8,-15);scene.add(ghost);
+function glowTexture(){const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d');const g=x.createRadialGradient(64,64,0,64,64,64);g.addColorStop(0,'rgba(255,255,255,.8)');g.addColorStop(.18,'rgba(255,255,255,.5)');g.addColorStop(.45,'rgba(255,255,255,.12)');g.addColorStop(1,'rgba(255,255,255,0)');x.fillStyle=g;x.fillRect(0,0,128,128);return new THREE.CanvasTexture(c);}
+const glow=glowTexture();let seed=41;function random(){seed=(seed*16807)%2147483647;return(seed-1)/2147483646;}
+const orbs=Array.from({length:75},(_,i)=>{const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:glow,color:palette[i%3],transparent:true,opacity:.3,blending:THREE.AdditiveBlending,depthWrite:false}));const size=i<12?1+random()*1.4:.07+random()*.25;sprite.scale.setScalar(size);sprite.position.set((random()-.5)*40,random()*19-2,(random()-.5)*26);scene.add(sprite);return{sprite,y:sprite.position.y,x:sprite.position.x,phase:random()*6.28};});
+const rayMaterial=new THREE.ShaderMaterial({transparent:true,depthWrite:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending,uniforms:{energy:{value:.4},time:{value:0}},vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,fragmentShader:`varying vec2 vUv;uniform float energy;uniform float time;void main(){float core=pow(max(0.,1.-abs(vUv.x-.5)*2.),3.);float stripes=.9+.1*sin(vUv.x*13.+time*.2);float fade=sin(vUv.y*3.14159);gl_FragColor=vec4(mix(vec3(.32,.7,.65),vec3(1.,.79,.48),vUv.x),core*fade*stripes*energy*.24);}`});
+const rays=[];for(let i=0;i<6;i++){const ray=new THREE.Mesh(new THREE.PlaneGeometry(2.4+i*.65,30),rayMaterial);ray.position.set(-14+i*5,12,-8-i*.6);ray.rotation.z=-.157;scene.add(ray);rays.push(ray);}
+const tint=img=>{const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const x=c.getContext('2d');x.drawImage(img,0,0);x.globalCompositeOperation='source-in';x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);return c;};const logos=[tint(word),tint(emblem)];
+const overlay=document.createElement('canvas');overlay.width=W;overlay.height=H;const ui=overlay.getContext('2d');
+function text(str,x,y,size,font='Izoard',color='#fff',align='left'){ui.font=`${size}px ${font}`;ui.fillStyle=color;ui.textAlign=align;ui.fillText(str,x,y);}
+function album(x,y,size){ui.save();ui.shadowColor='#0009';ui.shadowBlur=55;ui.shadowOffsetY=22;ui.drawImage(cover,x,y,size,size);ui.restore();ui.strokeStyle='#ffffff35';ui.lineWidth=1;ui.strokeRect(x+.5,y+.5,size-1,size-1);}
+function brand(cx,y,h){const ww=h*logos[0].width/logos[0].height;ui.drawImage(logos[0],cx-(ww+h+24)/2,y,ww,h);ui.drawImage(logos[1],cx+(ww-h+24)/2,y,h,h);}
+if(STORY){text('GRABBA',540,265,42,'Izoard','#fff','center');text('TURBO EP',540,365,118,'Signate','#fff','center');text('AUF005',540,415,30,'Izoard','#d0c9d8','center');album(305,505,470);text('TURBO (ORIGINAL MIX)',540,1370,51,'Izoard','#fff','center');text('OUT NOW',540,1430,33,'Izoard','#bcb5c8','center');ui.setLineDash([18,14]);ui.lineWidth=3;ui.strokeStyle='#ffffff60';ui.beginPath();ui.roundRect(150,1484,780,200,25);ui.stroke();ui.setLineDash([]);text('LINK STICKER',540,1600,34,'Izoard','#ffffff90','center');brand(540,1720,88);
+}else{album(126,140,410);text('GRABBA',588,210,46);text('TURBO',577,368,180,'Signate');text('ORIGINAL MIX',591,432,34,'Izoard','#d4cbd9');text('TURBO EP  /  AUF005',130,988,26,'Izoard','#c0b8ca');brand(1580,916,72);}
+const grain=document.createElement('canvas');grain.width=grain.height=256;const gx=grain.getContext('2d'),pixels=gx.createImageData(256,256);for(let i=0;i<pixels.data.length;i+=4){pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=random()*255;pixels.data[i+3]=4;}gx.putImageData(pixels,0,0);const noise=ctx.createPattern(grain,'repeat');
+const dimColor=new THREE.Color('#485361');let frames=0;function draw(now){const t=now/1000,position=(160.5+audio.currentTime)/365.45;if(an)an.getByteFrequencyData(fd);const bands=selectrBands(fd);kick+=(bands[0]/102-kick)*.3;highs+=((bands[4]+bands[5]+bands[6])/306-highs)*.15;
+for(let i=0;i<N;i++){const bar=bars[i],target=Math.pow(Math.max(bar.shape*.25*composite(WEIGHTS[i%19],bands),.01),1.55)/150*(STORY?6.5:8);bar.height+=(Math.max(.07,target)-bar.height)*(target>bar.height?.7:.25);bar.mesh.scale.y=bar.height;bar.mesh.position.y=bar.height/2;bar.reflection.scale.y=bar.height*.55;bar.reflection.position.y=-bar.height*.275;const played=i/N<position;bar.mesh.material.color.copy(played?bar.color:dimColor);bar.mesh.material.opacity=played?1:.52;bar.mesh.material.emissiveIntensity=played?.7+kick*1.8:.06;bar.reflection.material.opacity=played?.14+kick*.12:.035;}
+camera.position.x=Math.sin(t*.07)*.65;camera.position.y=STORY?8:6.2+Math.sin(t*.09)*.15;camera.position.z=STORY?28:23;camera.lookAt(0,STORY?3.3:4,0);ghost.rotation.z=Math.sin(t*.027)*.035;
+rayMaterial.uniforms.energy.value=.45+kick*.9;rayMaterial.uniforms.time.value=t;rays.forEach((ray,i)=>{ray.rotation.z=-.157+Math.sin(t*.045+i*.12)*.12;});orbs.forEach(({sprite,x,y,phase},i)=>{sprite.position.x=x+Math.sin(t*.065+phase)*.7;sprite.position.y=y+Math.sin(t*.1+phase)*.5;sprite.material.opacity=(i<12?.23:.3)+highs*(.15+.25*Math.sin(t+phase)**2);});
+composer.render();ctx.drawImage(renderer.domElement,0,0,W,H);const wash=ctx.createLinearGradient(0,0,0,H);wash.addColorStop(0,'#332d4960');wash.addColorStop(.48,'#332d4900');wash.addColorStop(1,'#151422c0');ctx.fillStyle=wash;ctx.fillRect(0,0,W,H);const vignette=ctx.createRadialGradient(W*.5,H*.45,H*.12,W*.5,H*.45,H*.9);vignette.addColorStop(0,'#0000');vignette.addColorStop(1,'#090b1880');ctx.fillStyle=vignette;ctx.fillRect(0,0,W,H);ctx.fillStyle=noise;ctx.fillRect(0,0,W,H);ctx.drawImage(overlay,0,0);frames++;window.viz={time:audio.currentTime,playing:!audio.paused,energy:Math.max(...fd),frames};requestAnimationFrame(draw);}
+requestAnimationFrame(draw);
+</script></body></html>
