@@ -1,23 +1,4 @@
-// Background from the Liquid Light concept: cover shine plus the WebGL liquid shader.
-const W=self.VIZ_W||1920,H=self.VIZ_H||1080,BG='#332d49'; // the exporter sets VIZ_W/VIZ_H for vertical formats
-const SHINE_STOPS = [[0, 0, 0, 0], [0.48, -26, 0.21, 0.055], [0.56, -23, 0.17, 0.025], [0.86, -5, 0, -0.067], [1, 12, -0.06, -0.108]];
-function rgbToHsl(hex) {
-  const n = parseInt(hex.slice(1), 16), r = (n >> 16 & 255) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
-  if (max === min) return [0, 0, l];
-  const d = max - min, s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  const h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-  return [h / 6, s, l];
-}
-const hsl = (h, s, l) => `hsl(${(((h % 1) + 1) % 1) * 360} ${Math.max(0, Math.min(1, s)) * 100}% ${Math.max(0, Math.min(1, l)) * 100}%)`;
-const BASE = rgbToHsl(BG);
-function shineBackground(ctx, strength, angle, shift) {
-  const rad = angle * Math.PI / 180, half = Math.hypot(W, H) / 2, dx = Math.cos(rad) * half, dy = Math.sin(rad) * half;
-  const cx = W / 2 + Math.cos(rad) * shift, cy = H / 2 + Math.sin(rad) * shift; // shift slides the bright line along the axis
-  const g = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
-  for (const [o, dh, ds, dl] of SHINE_STOPS) g.addColorStop(o, hsl(BASE[0] + dh / 360 * strength, BASE[1] + ds * strength, BASE[2] + dl * strength));
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-}
+// Liquid Light background from the liquid concept page (the shipped look). Overrides lab/bg.js's softer liquid().
 function liquid(illo){
  const canvas=document.createElement('canvas');canvas.width=Math.round(W/3);canvas.height=Math.round(H/3);
  const gl=canvas.getContext('webgl',{alpha:false,preserveDrawingBuffer:true});if(!gl)throw Error('WebGL is required');
@@ -28,19 +9,25 @@ function liquid(illo){
  float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+1.),f.x),f.y);}
  float fbm(vec2 p){float v=0.,a=.5;for(int i=0;i<4;i++){v+=a*noise(p);p=mat2(.8,-.6,.6,.8)*p*2.03+3.7;a*=.5;}return v;}
  void main(){
- // Slow, soft morph: two levels of domain warp on low-frequency noise, no contour lines, no grain.
- vec2 p=(uv-.5)*vec2(aspect,1.);float t=time*.05;
- vec2 q=vec2(fbm(p*.9+vec2(t,-t*.3)),fbm(p*.9+vec2(5.2,1.3)-t*.25));
- vec2 r=vec2(fbm(p*.8+q*1.6+vec2(1.7,9.2)+t*.18),fbm(p*.8+q*1.6+vec2(8.3,2.8)-t*.15));
- float f=fbm(p*.7+r*1.4);
+ vec2 p=(uv-.5)*vec2(aspect,1.);float t=time*.042;
+ vec2 q=vec2(fbm(p*1.8+vec2(t,-t*.4)),fbm(p*1.8+vec2(4.3,-t*.6)));
+ vec2 r=vec2(fbm(p*2.1+q*2.7+vec2(1.7,t*.6)),fbm(p*2.1+q*2.7+vec2(8.3,-t*.5)));
+ float f=fbm(p*2.+r*(2.6+bass*.45));
+ float ribbons=sin(f*24.+p.x*2.8-t*1.1);
  vec3 base=vec3(.20,.176,.286);
- vec3 teal=vec3(.25,.55,.53),gold=vec3(.62,.50,.30),rose=vec3(.52,.32,.42),deep=vec3(.13,.11,.21);
- vec3 col=mix(deep,base,smoothstep(.2,.7,f));
- col=mix(col,teal,smoothstep(.45,.85,r.x)*.55);
- col=mix(col,gold,smoothstep(.55,.9,q.y)*.35);
- col=mix(col,rose,smoothstep(.5,.85,r.y)*.35);
- col*=1.+bass*.06;
- float vignette=smoothstep(1.,.2,length((uv-.5)*vec2(.9,1.1)));col*=.6+.4*vignette;
+ vec3 teal=vec3(.23,.63,.58),gold=vec3(.80,.62,.30),rose=vec3(.66,.36,.44);
+ vec3 color=mix(teal,gold,smoothstep(.32,.75,r.x));color=mix(color,rose,smoothstep(.52,.77,q.y));
+ float light=smoothstep(-.6,.95,ribbons);
+ vec3 col=mix(base*.72,color,light*.62);
+ float seam=pow(max(0.,1.-abs(ribbons-.68)),14.);
+ col+=color*seam*(.28+bass*.24);
+ vec2 warp=uv+vec2(r.x-.5,r.y-.5)*(.7+bass*.15);warp=abs(fract(warp*.8)*2.-1.);
+ vec4 tex=texture2D(art,warp);col=mix(col,tex.rgb,.055*tex.a);
+ float band=exp(-pow((dot(p,vec2(.156,.988))-.3*sin(t*.7))/.25,2.));col+=vec3(.13,.13,.20)*band*.9;
+ float grain=hash(gl_FragCoord.xy+fract(time)*513.);
+ col+=(grain-.5)*(.017+highs*.018);
+ col+=vec3(.5,.7,.8)*pow(grain,80.)*highs*.12;
+ float vignette=smoothstep(.95,.15,length((uv-.5)*vec2(.9,1.)));col*=.55+.45*vignette;
  gl_FragColor=vec4(col,1.);
  }`;
  const shader=(type,src)=>{let s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s};

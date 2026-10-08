@@ -1,0 +1,12 @@
+{
+  "artist": "GRABBA",
+  "release": "TURBO EP",
+  "catalog": "AUF005",
+  "title": "TURBO",
+  "mix": "ORIGINAL MIX",
+  "bpm": 132,
+  "audio": "/Users/mimen/Library/CloudStorage/Dropbox/DJ Library/Transferred External Tracks/50052 - grabba - Turbo [CM1].wav",
+  "cover": "../../assets/cover.webp",
+  "illo": "../../assets/illo.webp",
+  "clip": { "start": 160.5, "duration": 30 }
+}

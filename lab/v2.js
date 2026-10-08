@@ -109,7 +109,7 @@ V2.push({
   blurb: "Unknown Pleasures, smoothed. The front line is the live spectrum (bass left, highs right) with every point on a spring, so it flows instead of flickering. Lines are born every eighth note and glide back into perspective continuously, getting narrower, higher and dimmer, so the last two bars become a moving landscape. A kick makes the line being born glow teal to gold.",
   init() { const P = 80; return { P, live: new Float32Array(P), liveV: new Float32Array(P), lines: [], acc: 0 }; },
   draw(c, R, a, st, pos, dt) {
-    const P = st.P, every = 60 / 132 / 2, depthMax = 16;
+    const P = st.P, every = 60 / (a.bpm || 132) / 2, depthMax = 16;
     for (let i = 0; i < P; i++) {
       const sp = a.spectrum, j = Math.floor(i / P * 88), t = sp ? (sp[Math.max(0, j - 2)] + 2 * sp[Math.max(0, j - 1)] + 3 * sp[j] + 2 * sp[j + 1] + sp[j + 2]) / 9 : 0;
       if (t >= st.live[i]) { st.live[i] = t; st.liveV[i] = 0; } else { st.liveV[i] += (180 * (t - st.live[i]) - 20 * st.liveV[i]) * dt; st.live[i] += st.liveV[i] * dt; }

@@ -1,0 +1,1 @@
+{ "private": true, "type": "module", "scripts": { "export": "node export/export.mjs" }, "devDependencies": { "playwright": "1.63.0" } }
