@@ -2,7 +2,8 @@
 // Shared idea: the song's own waveform (bass-driven) is the body; the other bands decorate it smoothly.
 const TEAL = '#7fd1c7', GOLD = '#efd183', SALMON = '#f2a7a0', PERI = '#8fb4ff', MINT = '#a1d5b0';
 const lerp = (a, b, t) => a + (b - a) * t;
-const spring = (st, target, dt, k = 170, c = 14) => { // critically-damped-ish spring, returns position
+const spring = (st, target, dt, k = 170, c = 14) => { // instant rise, spring on the fall; returns position
+  if (target >= st.x) { st.x = target; st.v = 0; return st.x; }
   const a = k * (target - st.x) - c * st.v; st.v += a * dt; st.x += st.v * dt; return st.x;
 };
 

@@ -27,10 +27,11 @@ canvas{display:block;width:min(100%,1280px);height:auto;border-radius:8px}
 <li><b>Envelope follower:</b> about 15 ms attack and 250 ms release. Hits land instantly and fall off smoothly. These are the teal meters under the canvas.</li>
 <li><b>Onset gate per band:</b> spectral flux (how much the band just jumped) compared with its own recent average plus 1.6 standard deviations. When it crosses, the gate fires a 1 that decays, with a short lockout so one hit fires once. This is the gate idea: motion triggers on hits, not on level. These are the gold meters.</li>
 <li><b>Beat clock</b> locked to 132 BPM, used for rhythmic decay in F and ridge timing in C.</li>
-<li><b>Springs</b> on top of the gates in A and B, so a hit overshoots a little and settles instead of snapping.</li></ul></details>
+<li><b>Springs on the fall only:</b> every moving value jumps up on a hit in the same frame, and only the way down is sprung or eased, so hits land on the beat and still settle smoothly.</li>
+<li><b>Analysed ahead of time:</b> the clip is analysed once at 10 ms steps before playback, and each frame looks up the analysis at the moment you are hearing (playback time minus the browser's output latency). Nothing waits on a live FFT window, so there is no analysis lag. Add <code>?lead=60</code> to the URL to push the visuals earlier if they still feel late on your setup (default 30 ms).</li></ul></details>
 <script src="bg.js"></script>
 <script type="module">
-import { createAnalysis, BAND_NAMES, CLIP_OFFSET, TRACK_LEN } from './audio.js';
+import { precompute, BAND_NAMES, CLIP_OFFSET, TRACK_LEN } from './audio.js';
 import { VARIANTS as V1 } from './variants.js';
 import { V2 } from './v2.js';
 // Round 2 first; round 1 kept behind it for comparison (A, B, C, F only).
@@ -41,16 +42,21 @@ const [cover, illo, word, emblem, track] = await Promise.all([load('cover.webp')
 const tint = (img) => { const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const x = c.getContext('2d'); x.drawImage(img, 0, 0); x.globalCompositeOperation = 'source-in'; x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); return c; };
 const logo = tint(word), mark = tint(emblem), bg = liquid(illo);
 const audio = new Audio(A + 'clip.mp3'); audio.loop = true;
-let ac, update, state = null, cur = +(new URLSearchParams(location.search).get('v') || 0);
+let ac, lookup, state = null, lastT = 0, cur = +(new URLSearchParams(location.search).get('v') || 0);
 const vstate = VARIANTS.map((v) => v.init(track));
 const tabs = document.getElementById('tabs'), blurb = document.getElementById('blurb'), meter = document.getElementById('meter');
 VARIANTS.forEach((v, i) => { const b = document.createElement('button'); b.textContent = v.name; b.onclick = () => pick(i); tabs.append(b); });
 meter.innerHTML = BAND_NAMES.map((n) => `<div>${n}<i></i><b></b></div>`).join('');
 function pick(i) { cur = i; [...tabs.children].forEach((b, k) => b.classList.toggle('on', k === i)); blurb.textContent = VARIANTS[i].blurb; }
 pick(cur); addEventListener('keydown', (e) => { const k = +e.key; if (k >= 1 && k <= VARIANTS.length) pick(k - 1); });
-const btn = document.getElementById('play'); btn.disabled = false; btn.textContent = 'Play';
+const btn = document.getElementById('play'); btn.textContent = 'Analysing';
+// Analysis is done once, ahead of playback, then looked up by time: no FFT window or attack lag on screen.
+// LEAD shifts the lookup forward to cancel the analysis window centre and envelope attack (~30 ms); ?lead=ms tunes it.
+const LEAD = +(new URLSearchParams(location.search).get('lead') ?? 30) / 1000;
+lookup = await precompute(await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await (await fetch(A + 'clip.mp3')).arrayBuffer()));
+btn.disabled = false; btn.textContent = 'Play';
 btn.onclick = async () => {
-  if (!ac) { ac = new AudioContext(); const src = ac.createMediaElementSource(audio); src.connect(ac.destination); update = createAnalysis(ac, src); }
+  if (!ac) { ac = new AudioContext(); ac.createMediaElementSource(audio).connect(ac.destination); }
   if (audio.paused) { await ac.resume(); await audio.play(); btn.textContent = 'Pause'; } else { audio.pause(); btn.textContent = 'Play'; }
 };
 const art = document.createElement('canvas'); art.width = W; art.height = H;
@@ -62,7 +68,8 @@ function draw(now) {
   const dt = Math.min(0.05, (now - last) / 1000 || 0.016); last = now;
   // Background clock eases to full speed while playing and to a slow drift when paused.
   speed += ((audio.paused ? 0.15 : 1) - speed) * (1 - Math.exp(-dt / 1.5)); clock += dt * speed;
-  if (update && !audio.paused) state = update(dt, audio.currentTime);
+    // What is heard now left the graph outputLatency ago, so look up that moment (plus the analysis lead).
+  if (ac && !audio.paused) { const t = audio.currentTime - (ac.outputLatency || ac.baseLatency || 0) + LEAD; state = lookup(t, lastT); lastT = t; }
   const a = state || { env: new Float32Array(6), gate: new Float32Array(6), level: new Float32Array(6), spectrum: new Float32Array(96), kick: 0, beat: 0 };
   const pos = (CLIP_OFFSET + audio.currentTime) / TRACK_LEN;
   shineBackground(ctx, 0.9, 81, Math.sin(clock * 0.1) * 180);

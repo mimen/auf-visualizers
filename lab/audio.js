@@ -63,3 +63,33 @@ export function createAnalysis(ctx, source) {
     return s;
   };
 }
+
+// Offline pass: run the same analysis over the decoded clip ahead of time, so playback looks values up by time
+// instead of waiting on a live FFT window and attack smoothing. Returns lookup(time, prevTime) -> state.
+export async function precompute(buf, hop = 0.01) {
+  const off = new OfflineAudioContext(1, buf.length, buf.sampleRate);
+  const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination);
+  const update = createAnalysis(off, src), n = BANDS.length, F = Math.floor(buf.duration / hop);
+  const T = { env: new Float32Array(F * n), gate: new Float32Array(F * n), level: new Float32Array(F * n), hit: new Uint8Array(F * n), spectrum: new Float32Array(F * 96), kick: new Float32Array(F) };
+  for (let f = 1; f < F; f++) off.suspend(f * hop).then(() => {
+    const s = update(hop, f * hop);
+    T.env.set(s.env, f * n); T.gate.set(s.gate, f * n); T.level.set(s.level, f * n); T.hit.set(s.hit, f * n); T.spectrum.set(s.spectrum, f * 96); T.kick[f] = s.kick;
+    off.resume();
+  });
+  src.start(); await off.startRendering();
+  // The bass waveform is sliced straight from a low-passed render, ending at the lookup time.
+  const offB = new OfflineAudioContext(1, buf.length, buf.sampleRate), srcB = offB.createBufferSource(), lp = offB.createBiquadFilter();
+  srcB.buffer = buf; lp.type = 'lowpass'; lp.frequency.value = 150; lp.Q.value = 0.7; srcB.connect(lp); lp.connect(offB.destination); srcB.start();
+  const bass = (await offB.startRendering()).getChannelData(0), sr = buf.sampleRate;
+  const s = { env: new Float32Array(n), gate: new Float32Array(n), level: new Float32Array(n), hit: new Uint8Array(n), spectrum: new Float32Array(96), bassWave: new Float32Array(4096), kick: 0, beat: 0, bar: 0, onsets: 0 };
+  return function lookup(time, prev) {
+    const f = Math.min(F - 1, Math.max(0, Math.round(time / hop))), p = Math.round(prev / hop);
+    s.env.set(T.env.subarray(f * n, f * n + n)); s.gate.set(T.gate.subarray(f * n, f * n + n)); s.level.set(T.level.subarray(f * n, f * n + n));
+    s.spectrum.set(T.spectrum.subarray(f * 96, f * 96 + 96)); s.kick = T.kick[f];
+    // A render frame spans more than one 10 ms analysis frame, so collect every hit since the last lookup.
+    s.hit.fill(0); for (let g = p < f && f - p < 20 ? p + 1 : f; g <= f; g++) for (let b = 0; b < n; b++) if (T.hit[g * n + b]) { s.hit[b] = 1; s.onsets++; }
+    const end = Math.round(time * sr); s.bassWave.fill(0); s.bassWave.set(bass.subarray(Math.max(0, end - 4096), Math.max(0, end)), Math.max(0, 4096 - end));
+    s.beat = time * BPM / 60; s.bar = s.beat / 4;
+    return s;
+  };
+}

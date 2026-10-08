@@ -36,9 +36,9 @@ V2.push({
     }
     if (a.hit && (a.hit[0] || a.hit[1])) {
       st.hitAt = (st.hitAt + 0.37) % 1; const c0 = Math.floor(st.hitAt * n);
-      for (let d = -3; d <= 3; d++) { const i = c0 + d; if (i >= 0 && i < n) st.v[i] += 9 * Math.exp(-d * d / 4); }
+      for (let d = -3; d <= 3; d++) { const i = c0 + d; if (i >= 0 && i < n) { st.y[i] += 0.6 * Math.exp(-d * d / 4); st.v[i] += 4 * Math.exp(-d * d / 4); } }
     }
-    st.liftV += (220 * ((0.3 + a.env[0] * 0.55) - st.lift) - 22 * st.liftV) * dt; st.lift += st.liftV * dt;
+    const lt = 0.3 + a.env[0] * 0.55; if (lt >= st.lift) { st.lift = lt; st.liftV = 0; } else { st.liftV += (220 * (lt - st.lift) - 22 * st.liftV) * dt; st.lift += st.liftV * dt; }
     const grad = playedGradient(c, R), crest = 0.25 + (a.env[4] + a.env[5]) * 0.35;
     c.save(); c.shadowColor = TEAL; c.shadowBlur = 18 * crest;
     for (let pass = 0; pass < 2; pass++) {
@@ -61,8 +61,9 @@ V2.push({
 // holds still instead of scrolling), smoothed point by point with a spring so it flows. Two thinner strands
 // follow it at an offset, pulled by mids and highs. A soft filled glow sits under the main strand.
 function alignedWindow(w, n) { // start at a rising zero crossing so the shape is stable frame to frame
-  let s = 0; for (let i = 1; i < w.length / 2; i++) if (w[i - 1] < 0 && w[i] >= 0) { s = i; break; }
-  const span = Math.min(w.length - s, 900), out = new Float32Array(n); // about 3 bass cycles
+  const span = 900; let s = w.length - span; // newest samples; step back to a rising zero crossing (at most one bass cycle)
+  for (let i = s; i > s - 400 && i > 0; i--) if (w[i - 1] < 0 && w[i] >= 0) { s = i; break; }
+  const out = new Float32Array(n); // about 3 bass cycles
   for (let i = 0; i < n; i++) out[i] = w[s + Math.floor(i / (n - 1) * (span - 1))];
   return out;
 }
@@ -82,7 +83,7 @@ V2.push({
         const u = i / (n - 1), taper = Math.pow(Math.sin(Math.PI * u), 1.5);
         const src = w[Math.min(n - 1, Math.max(0, i - lag))] * st.gain;
         const target = -src * taper * amps[k] * R.h * 0.95 * (k ? 0.7 : 1);
-        st.v[k][i] += (260 * (target - st.y[k][i]) - 24 * st.v[k][i]) * dt; st.y[k][i] += st.v[k][i] * dt;
+        const y = st.y[k][i]; st.y[k][i] = Math.abs(target) >= Math.abs(y) ? target : y + (target - y) * (1 - Math.exp(-dt / 0.06));
       }
     }
     const path = (k) => { c.beginPath(); for (let i = 0; i < n; i++) { const x = R.x + i / (n - 1) * R.w, y = cy + st.y[k][i]; i ? c.lineTo(x, y) : c.moveTo(x, y); } };
@@ -111,7 +112,7 @@ V2.push({
     const P = st.P, every = 60 / 132 / 2, depthMax = 16;
     for (let i = 0; i < P; i++) {
       const sp = a.spectrum, j = Math.floor(i / P * 88), t = sp ? (sp[Math.max(0, j - 2)] + 2 * sp[Math.max(0, j - 1)] + 3 * sp[j] + 2 * sp[j + 1] + sp[j + 2]) / 9 : 0;
-      st.liveV[i] += (180 * (t - st.live[i]) - 20 * st.liveV[i]) * dt; st.live[i] += st.liveV[i] * dt;
+      if (t >= st.live[i]) { st.live[i] = t; st.liveV[i] = 0; } else { st.liveV[i] += (180 * (t - st.live[i]) - 20 * st.liveV[i]) * dt; st.live[i] += st.liveV[i] * dt; }
     }
     st.acc += dt / every;
     while (st.acc >= 1) { st.acc -= 1; st.lines.unshift({ s: Float32Array.from(st.live), glow: a.kick, d: 0 }); }
@@ -142,7 +143,7 @@ V2.push({
   init(track) { const n = 52, rows = 16; return { n, rows, shape: fullShape(track, n), tgt: new Float32Array(n), dot: new Float32Array(n * rows), peak: new Float32Array(n), last16: -1, sp: { x: 0, v: 0 }, spark: new Float32Array(n) }; },
   draw(c, R, a, st, pos, dt) {
     const { n, rows } = st, step = R.w / n, gy = R.h / rows, rad = Math.min(step, gy) * 0.3;
-    st.sp.v += (240 * ((0.3 + a.env[0] * 0.55 + a.kick * 0.25) - st.sp.x) - 20 * st.sp.v) * dt; st.sp.x += st.sp.v * dt;
+    const ft = 0.3 + a.env[0] * 0.55 + a.kick * 0.25; if (ft >= st.sp.x) { st.sp.x = ft; st.sp.v = 0; } else { st.sp.v += (240 * (ft - st.sp.x) - 20 * st.sp.v) * dt; st.sp.x += st.sp.v * dt; }
     const s16 = Math.floor((a.beat || 0) * 4), tick = s16 !== st.last16; st.last16 = s16;
     const hat = a.hit && (a.hit[4] || a.hit[5]);
     for (let i = 0; i < n; i++) {
@@ -152,7 +153,7 @@ V2.push({
       if (hat && Math.random() < 0.25) st.spark[i] = 1; st.spark[i] *= Math.exp(-dt * 5);
       for (let k = 0; k < rows; k++) {
         const on = Math.min(1, Math.max(0, st.tgt[i] - k)), j = i * rows + k;
-        st.dot[j] += (on - st.dot[j]) * (1 - Math.exp(-dt / (on > st.dot[j] ? 0.02 : 0.18)));
+        st.dot[j] += (on - st.dot[j]) * (1 - Math.exp(-dt / (on > st.dot[j] ? 0.008 : 0.18)));
       }
     }
     c.save(); c.globalCompositeOperation = 'lighter';
